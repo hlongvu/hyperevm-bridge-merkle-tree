@@ -6,8 +6,8 @@
   "scripts": {
     "test": "hardhat test",
     "compile": "hardhat compile",
-    "deploy:sepolia": "hardhat run scripts/deploy-sepolia.js --network sepolia",
-    "deploy:hyperevm": "hardhat run scripts/deploy-hyperevm.js --network hyperevm",
+    "deploy:sepolia": "hardhat ignition deploy ignition/modules/BridgeSepolia.js --network sepolia",
+    "deploy:hyperevm": "hardhat ignition deploy ignition/modules/BridgeHyperEVM.js --network hyperevm",
     "verify:setup": "node scripts/verify-setup.js",
     "relayer": "node relayer/index.js"
   },
