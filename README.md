@@ -1,4 +1,4 @@
-# HyperEVM Bridge
+# HyperEVM Bridge (PROOF OF CONCEPT)
 
 A bidirectional ERC20 bridge between **Sepolia** and **[HyperEVM](https://hyperliquid.gitbook.io/hyperliquid-docs/hyperevm)** testnet, using a **Lock & Mint** pattern with a **Merkle tree relayer**.
 
