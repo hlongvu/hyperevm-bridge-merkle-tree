@@ -140,7 +140,7 @@ describe("Bridge", function () {
       const { tree, entries, root } = buildMerkleTree([[user.address, amount, 0n]]);
       await hyperevmBridge.connect(relayer).setMerkleRoot(root);
       const proof = getMerkleProof(tree, 0n, entries);
-      await hyperevmBridge.connect(user).claim(proof, user.address, amount, 0n);
+      await hyperevmBridge.connect(user).claim(proof, root, user.address, amount, 0n);
 
       await hyperevmToken.connect(user).approve(await hyperevmBridge.getAddress(), amount);
       await expect(hyperevmBridge.connect(user).bridge(amount, user.address))
@@ -216,7 +216,7 @@ describe("Bridge", function () {
 
       const proof = getMerkleProof(tree, 0n, entries);
       await expect(
-        hyperevmBridge.connect(other).claim(proof, other.address, amount, 0n)
+        hyperevmBridge.connect(other).claim(proof, root, other.address, amount, 0n)
       )
         .to.emit(hyperevmBridge, "BridgeClaimed")
         .withArgs(other.address, amount, 0n);
@@ -228,7 +228,7 @@ describe("Bridge", function () {
       const { tree, entries, root } = buildMerkleTree([[other.address, amount, 0n]]);
       await hyperevmBridge.connect(relayer).setMerkleRoot(root);
       const proof = getMerkleProof(tree, 0n, entries);
-      await hyperevmBridge.connect(other).claim(proof, other.address, amount, 0n);
+      await hyperevmBridge.connect(other).claim(proof, root, other.address, amount, 0n);
 
       expect(await hyperevmBridge.processedNonces(0n)).to.equal(true);
     });
@@ -237,10 +237,10 @@ describe("Bridge", function () {
       const { tree, entries, root } = buildMerkleTree([[other.address, amount, 0n]]);
       await hyperevmBridge.connect(relayer).setMerkleRoot(root);
       const proof = getMerkleProof(tree, 0n, entries);
-      await hyperevmBridge.connect(other).claim(proof, other.address, amount, 0n);
+      await hyperevmBridge.connect(other).claim(proof, root, other.address, amount, 0n);
 
       await expect(
-        hyperevmBridge.connect(other).claim(proof, other.address, amount, 0n)
+        hyperevmBridge.connect(other).claim(proof, root, other.address, amount, 0n)
       ).to.be.revertedWith("Bridge: nonce already processed");
     });
 
@@ -252,21 +252,23 @@ describe("Bridge", function () {
 
       // proof is for wrongAmount but we submit the real amount — leaf mismatch
       await expect(
-        hyperevmBridge.connect(other).claim(proof, other.address, amount, 0n)
+        hyperevmBridge.connect(other).claim(proof, root, other.address, amount, 0n)
       ).to.be.revertedWith("Bridge: invalid merkle proof");
     });
 
-    it("claim reverts when no root is set", async function () {
+    it("claim reverts when root is unknown", async function () {
+      const { root } = buildMerkleTree([[other.address, amount, 0n]]);
+      // root was never posted via setMerkleRoot
       await expect(
-        hyperevmBridge.connect(other).claim([], other.address, amount, 0n)
-      ).to.be.revertedWith("Bridge: no merkle root set");
+        hyperevmBridge.connect(other).claim([], root, other.address, amount, 0n)
+      ).to.be.revertedWith("Bridge: unknown merkle root");
     });
 
     it("claim() reverts with zero recipient", async function () {
       const { root } = buildMerkleTree([[other.address, amount, 0n]]);
       await hyperevmBridge.connect(relayer).setMerkleRoot(root);
       await expect(
-        hyperevmBridge.connect(user).claim([], ethers.ZeroAddress, 100n, 0n)
+        hyperevmBridge.connect(user).claim([], root, ethers.ZeroAddress, 100n, 0n)
       ).to.be.revertedWith("Bridge: invalid recipient");
     });
 
@@ -274,7 +276,7 @@ describe("Bridge", function () {
       const { root } = buildMerkleTree([[other.address, amount, 0n]]);
       await hyperevmBridge.connect(relayer).setMerkleRoot(root);
       await expect(
-        hyperevmBridge.connect(user).claim([], other.address, 0n, 0n)
+        hyperevmBridge.connect(user).claim([], root, other.address, 0n, 0n)
       ).to.be.revertedWith("Bridge: amount must be > 0");
     });
 
@@ -290,11 +292,11 @@ describe("Bridge", function () {
       await hyperevmBridge.connect(relayer).setMerkleRoot(root);
 
       const proof0 = getMerkleProof(tree, 0n, entries);
-      await hyperevmBridge.connect(other).claim(proof0, other.address, amount, 0n);
+      await hyperevmBridge.connect(other).claim(proof0, root, other.address, amount, 0n);
       expect(await hyperevmBridge.processedNonces(1n)).to.equal(false);
 
       const proof1 = getMerkleProof(tree, 1n, entries);
-      await hyperevmBridge.connect(user).claim(proof1, user.address, amount2, 1n);
+      await hyperevmBridge.connect(user).claim(proof1, root, user.address, amount2, 1n);
       expect(await hyperevmToken.balanceOf(user.address)).to.equal(amount2);
     });
 
@@ -305,7 +307,7 @@ describe("Bridge", function () {
 
       const balBefore = await sepoliaToken.balanceOf(other.address);
       const proof = getMerkleProof(tree, 0n, entries);
-      await sepoliaBridge.connect(other).claim(proof, other.address, amount, 0n);
+      await sepoliaBridge.connect(other).claim(proof, root, other.address, amount, 0n);
       expect(await sepoliaToken.balanceOf(other.address)).to.equal(balBefore + amount);
     });
   });

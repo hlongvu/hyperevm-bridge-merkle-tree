@@ -14,11 +14,13 @@
  * The proof output can be passed directly to Bridge.claim() on-chain.
  */
 
+import { ethers } from "ethers";
 import { MerkleTree } from "merkletreejs";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { makeLeaf, keccak256buf } from "./relay.js";
+import "dotenv/config";
+import { makeLeaf, keccak256buf, BRIDGE_ABI } from "./relay.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -48,8 +50,49 @@ if (!entry) {
   process.exit(1);
 }
 
+// ── Verify local root matches on-chain root ──────────────────────────────────
+// Derive the destination chain from the direction name and check the live
+// merkleRoot() value so we don't hand out a proof for a stale/overwritten root.
+const localRoot = tree.getHexRoot();
+
+try {
+  // direction format after sanitization: "Sepolia_HyperEVM" or "HyperEVM_Sepolia"
+  const isToHyperEVM = direction.toLowerCase().includes("hyperevm") &&
+    direction.toLowerCase().indexOf("hyperevm") > direction.toLowerCase().indexOf("sepolia");
+
+  const depFile = isToHyperEVM
+    ? path.join(__dirname, "../deployments/hyperevm.json")
+    : path.join(__dirname, "../deployments/sepolia.json");
+
+  const rpcUrl = isToHyperEVM
+    ? (process.env.HYPEREVM_RPC_URL || "https://rpc.hyperliquid-testnet.xyz/evm")
+    : process.env.SEPOLIA_RPC_URL;
+
+  if (fs.existsSync(depFile) && rpcUrl) {
+    const dep = JSON.parse(fs.readFileSync(depFile, "utf-8"));
+    const provider = new ethers.JsonRpcProvider(rpcUrl);
+    const bridge = new ethers.Contract(dep.bridge, BRIDGE_ABI, provider);
+    const onChainRoot = await bridge.merkleRoot();
+
+    if (onChainRoot.toLowerCase() !== localRoot.toLowerCase()) {
+      console.error("ERROR: Local tree root does NOT match on-chain merkleRoot.");
+      console.error(`  Local  : ${localRoot}`);
+      console.error(`  On-chain: ${onChainRoot}`);
+      console.error("The root on-chain may have been updated since this tree was saved.");
+      console.error("Wait for the relayer to re-include your transfer, then retry.");
+      process.exit(1);
+    }
+    console.error(`[ok] On-chain root matches local tree: ${onChainRoot}`);
+  } else {
+    console.error("[warn] Could not verify on-chain root (deployment file or RPC URL missing). Proceeding without verification.");
+  }
+} catch (err) {
+  console.error(`[warn] On-chain root check failed: ${err.message}. Proceeding without verification.`);
+}
+
+// ── Output proof ─────────────────────────────────────────────────────────────
 const [recipient, amount, nonce] = entry;
 const leaf = makeLeaf(recipient, amount, nonce);
 const proof = tree.getHexProof(leaf);
 
-console.log(JSON.stringify({ recipient, amount, nonce, proof, merkleRoot: tree.getHexRoot() }, null, 2));
+console.log(JSON.stringify({ recipient, amount, nonce, proof, merkleRoot: localRoot }, null, 2));

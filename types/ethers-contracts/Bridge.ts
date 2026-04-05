@@ -6,12 +6,12 @@ import type { TypedContractEvent, TypedDeferredTopicFilter, TypedEventLog, Typed
   
 
   export interface BridgeInterface extends Interface {
-    getFunction(nameOrSignature: "bridge" | "claim" | "destChainId" | "merkleRoot" | "mode" | "outboundNonce" | "processedNonces" | "relayer" | "setMerkleRoot" | "token"): FunctionFragment;
+    getFunction(nameOrSignature: "bridge" | "claim" | "destChainId" | "merkleRoot" | "mode" | "outboundNonce" | "processedNonces" | "relayer" | "setMerkleRoot" | "token" | "validRoots"): FunctionFragment;
 
     getEvent(nameOrSignatureOrTopic: "BridgeClaimed" | "BridgeInitiated" | "MerkleRootUpdated"): EventFragment;
 
     encodeFunctionData(functionFragment: 'bridge', values: [BigNumberish, AddressLike]): string;
-encodeFunctionData(functionFragment: 'claim', values: [BytesLike[], AddressLike, BigNumberish, BigNumberish]): string;
+encodeFunctionData(functionFragment: 'claim', values: [BytesLike[], BytesLike, AddressLike, BigNumberish, BigNumberish]): string;
 encodeFunctionData(functionFragment: 'destChainId', values?: undefined): string;
 encodeFunctionData(functionFragment: 'merkleRoot', values?: undefined): string;
 encodeFunctionData(functionFragment: 'mode', values?: undefined): string;
@@ -20,6 +20,7 @@ encodeFunctionData(functionFragment: 'processedNonces', values: [BigNumberish]):
 encodeFunctionData(functionFragment: 'relayer', values?: undefined): string;
 encodeFunctionData(functionFragment: 'setMerkleRoot', values: [BytesLike]): string;
 encodeFunctionData(functionFragment: 'token', values?: undefined): string;
+encodeFunctionData(functionFragment: 'validRoots', values: [BytesLike]): string;
 
     decodeFunctionResult(functionFragment: 'bridge', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'claim', data: BytesLike): Result;
@@ -31,6 +32,7 @@ decodeFunctionResult(functionFragment: 'processedNonces', data: BytesLike): Resu
 decodeFunctionResult(functionFragment: 'relayer', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'setMerkleRoot', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'token', data: BytesLike): Result;
+decodeFunctionResult(functionFragment: 'validRoots', data: BytesLike): Result;
   }
 
   
@@ -113,7 +115,7 @@ decodeFunctionResult(functionFragment: 'token', data: BytesLike): Result;
 
     
     claim: TypedContractMethod<
-      [proof: BytesLike[], recipient: AddressLike, amount: BigNumberish, nonce: BigNumberish, ],
+      [proof: BytesLike[], root: BytesLike, recipient: AddressLike, amount: BigNumberish, nonce: BigNumberish, ],
       [void],
       'nonpayable'
     >
@@ -183,6 +185,14 @@ decodeFunctionResult(functionFragment: 'token', data: BytesLike): Result;
     >
     
 
+    
+    validRoots: TypedContractMethod<
+      [arg0: BytesLike, ],
+      [boolean],
+      'view'
+    >
+    
+
 
     getFunction<T extends ContractMethod = ContractMethod>(key: string | FunctionFragment): T;
 
@@ -192,7 +202,7 @@ decodeFunctionResult(functionFragment: 'token', data: BytesLike): Result;
       'nonpayable'
     >;
 getFunction(nameOrSignature: 'claim'): TypedContractMethod<
-      [proof: BytesLike[], recipient: AddressLike, amount: BigNumberish, nonce: BigNumberish, ],
+      [proof: BytesLike[], root: BytesLike, recipient: AddressLike, amount: BigNumberish, nonce: BigNumberish, ],
       [void],
       'nonpayable'
     >;
@@ -234,6 +244,11 @@ getFunction(nameOrSignature: 'setMerkleRoot'): TypedContractMethod<
 getFunction(nameOrSignature: 'token'): TypedContractMethod<
       [],
       [string],
+      'view'
+    >;
+getFunction(nameOrSignature: 'validRoots'): TypedContractMethod<
+      [arg0: BytesLike, ],
+      [boolean],
       'view'
     >;
 

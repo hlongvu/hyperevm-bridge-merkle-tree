@@ -27,8 +27,13 @@ contract Bridge {
     /// @notice Tracks inbound nonces already processed to prevent replay attacks.
     mapping(uint256 => bool) public processedNonces;
 
-    /// @notice Current Merkle root for claimable transfers. Zero means no root set.
+    /// @notice Most recently posted Merkle root. Zero means no root set yet.
     bytes32 public merkleRoot;
+
+    /// @notice All historical roots accepted via setMerkleRoot(). A claim is
+    ///         valid against any root in this set, so users whose proofs were
+    ///         built against an older batch are never locked out.
+    mapping(bytes32 => bool) public validRoots;
 
     event BridgeInitiated(
         address indexed sender,
@@ -67,6 +72,7 @@ contract Bridge {
         require(msg.sender == relayer, "Bridge: caller is not relayer");
         require(root != bytes32(0), "Bridge: root cannot be zero");
         merkleRoot = root;
+        validRoots[root] = true;
         emit MerkleRootUpdated(root);
     }
 
@@ -74,24 +80,27 @@ contract Bridge {
      * @notice Claim a bridged transfer by submitting a Merkle proof.
      *         Anyone may call this on behalf of `recipient`.
      * @param proof      Merkle proof path (from @openzeppelin/merkle-tree).
+     * @param root       The Merkle root the proof was built against. Must be a
+     *                   previously accepted root (present in validRoots).
      * @param recipient  Address to receive tokens.
      * @param amount     Amount of tokens to release.
      * @param nonce      Outbound nonce from the source chain BridgeInitiated event.
      */
     function claim(
         bytes32[] calldata proof,
+        bytes32 root,
         address recipient,
         uint256 amount,
         uint256 nonce
     ) external {
-        require(merkleRoot != bytes32(0), "Bridge: no merkle root set");
+        require(validRoots[root], "Bridge: unknown merkle root");
         require(!processedNonces[nonce], "Bridge: nonce already processed");
         require(recipient != address(0), "Bridge: invalid recipient");
         require(amount > 0, "Bridge: amount must be > 0");
 
         // Single keccak256 of encodePacked — matches merkletreejs off-chain leaf encoding
         bytes32 leaf = keccak256(abi.encodePacked(recipient, amount, nonce));
-        require(MerkleProof.verify(proof, merkleRoot, leaf), "Bridge: invalid merkle proof");
+        require(MerkleProof.verify(proof, root, leaf), "Bridge: invalid merkle proof");
 
         processedNonces[nonce] = true;
 

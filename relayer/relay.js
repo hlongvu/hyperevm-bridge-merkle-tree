@@ -189,7 +189,14 @@ export async function relayDirection({ name, stateKey, srcBridge, dstBridge, sta
 
   log(`[${name}] Found ${events.length} BridgeInitiated event(s)`);
 
-  await buildAndPostMerkleRoot({ name, events, dstBridge, treeDir });
+  const tree = await buildAndPostMerkleRoot({ name, events, dstBridge, treeDir });
+
+  // Only advance the block pointer when the root was successfully posted on-chain.
+  // If setMerkleRoot() failed, keep state unchanged so the events are re-scanned next poll.
+  if (tree === null) {
+    log(`[${name}] Root not posted — state NOT advanced, will retry next poll`);
+    return;
+  }
 
   state[stateKey] = toBlock;
   saveState(stateFile, state);

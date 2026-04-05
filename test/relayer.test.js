@@ -129,8 +129,8 @@ describe("Relayer", function () {
       const events = await srcBridge.queryFilter(srcBridge.filters.BridgeInitiated());
       await buildAndPostMerkleRoot({ name: "A", events, dstBridge: dstBridgeWrite, treeDir });
 
-      const { proof } = getProofFromFile(path.join(treeDir, "merkle-tree-A.json"), 0);
-      await expect(dstBridge.connect(other).claim(proof, other.address, amount, 0n))
+      const { proof, root } = getProofFromFile(path.join(treeDir, "merkle-tree-A.json"), 0);
+      await expect(dstBridge.connect(other).claim(proof, root, other.address, amount, 0n))
         .to.emit(dstBridge, "BridgeClaimed")
         .withArgs(other.address, amount, 0n);
     });
@@ -158,11 +158,11 @@ describe("Relayer", function () {
       await buildAndPostMerkleRoot({ name: "B", events: events2Only, dstBridge: dstBridgeWrite, treeDir });
 
       // Both nonces must be provable from the latest tree
-      const { proof: proof0 } = getProofFromFile(path.join(treeDir, "merkle-tree-B.json"), 0);
-      const { proof: proof1 } = getProofFromFile(path.join(treeDir, "merkle-tree-B.json"), 1);
+      const { proof: proof0, root: root0 } = getProofFromFile(path.join(treeDir, "merkle-tree-B.json"), 0);
+      const { proof: proof1, root: root1 } = getProofFromFile(path.join(treeDir, "merkle-tree-B.json"), 1);
 
-      await dstBridge.connect(other).claim(proof0, other.address, amount, 0n);
-      await dstBridge.connect(user).claim(proof1, user.address, amount, 1n);
+      await dstBridge.connect(other).claim(proof0, root0, other.address, amount, 0n);
+      await dstBridge.connect(user).claim(proof1, root1, user.address, amount, 1n);
 
       expect(await dstToken.balanceOf(other.address)).to.equal(amount);
       expect(await dstToken.balanceOf(user.address)).to.equal(amount);
@@ -274,8 +274,8 @@ describe("Relayer", function () {
         treeDir,
       });
 
-      const { proof } = getProofFromFile(path.join(treeDir, "merkle-tree-C.json"), 0);
-      await dstBridge.connect(other).claim(proof, other.address, amount, 0n);
+      const { proof, root } = getProofFromFile(path.join(treeDir, "merkle-tree-C.json"), 0);
+      await dstBridge.connect(other).claim(proof, root, other.address, amount, 0n);
       expect(await dstToken.balanceOf(other.address)).to.equal(amount);
     });
 
@@ -297,8 +297,8 @@ describe("Relayer", function () {
       });
 
       for (const [nonce, recipient] of [[0, other], [1, user], [2, relayer]]) {
-        const { proof } = getProofFromFile(path.join(treeDir, "merkle-tree-D.json"), nonce);
-        await dstBridge.connect(recipient).claim(proof, recipient.address, amount, nonce);
+        const { proof, root } = getProofFromFile(path.join(treeDir, "merkle-tree-D.json"), nonce);
+        await dstBridge.connect(recipient).claim(proof, root, recipient.address, amount, nonce);
       }
 
       expect(await dstToken.balanceOf(other.address)).to.equal(amount);
@@ -336,11 +336,11 @@ describe("Relayer", function () {
       });
 
       // Both nonces must be provable from the tree after poll 2
-      const { proof: proof0 } = getProofFromFile(path.join(treeDir, "merkle-tree-E.json"), 0);
-      const { proof: proof1 } = getProofFromFile(path.join(treeDir, "merkle-tree-E.json"), 1);
+      const { proof: proof0, root: root0 } = getProofFromFile(path.join(treeDir, "merkle-tree-E.json"), 0);
+      const { proof: proof1, root: root1 } = getProofFromFile(path.join(treeDir, "merkle-tree-E.json"), 1);
 
-      await dstBridge.connect(other).claim(proof0, other.address, amount, 0n);
-      await dstBridge.connect(user).claim(proof1, user.address, amount, 1n);
+      await dstBridge.connect(other).claim(proof0, root0, other.address, amount, 0n);
+      await dstBridge.connect(user).claim(proof1, root1, user.address, amount, 1n);
     });
   });
 });
