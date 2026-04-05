@@ -1,16 +1,19 @@
 /**
  * Bridge Relayer
  *
- * Polls BridgeInitiated events on both chains and calls release() on the
- * destination chain after signing the payload with the relayer private key.
+ * Polls BridgeInitiated events on both chains, batches pending transfers into
+ * a Merkle tree, and posts the root on-chain via setMerkleRoot(). Users then
+ * claim their funds by submitting a Merkle proof to Bridge.claim().
  *
  * State is persisted to relayer/state.json (last processed block per chain).
+ * Tree data is persisted to relayer/merkle-tree-<direction>.json for proof lookup.
  *
  * Usage:
  *   node relayer/index.js
  */
 
 import { ethers } from "ethers";
+import { StandardMerkleTree } from "@openzeppelin/merkle-tree";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -33,7 +36,8 @@ const STATE_FILE = path.join(__dirname, "state.json");
 
 const BRIDGE_ABI = [
   "event BridgeInitiated(address indexed sender, address indexed recipient, uint256 amount, uint256 nonce)",
-  "function release(address recipient, uint256 amount, uint256 nonce, bytes calldata sig) external",
+  "function setMerkleRoot(bytes32 root) external",
+  "function merkleRoot() view returns (bytes32)",
   "function processedNonces(uint256) view returns (bool)",
   "function destChainId() view returns (uint256)",
 ];
@@ -55,25 +59,82 @@ function log(msg) {
   console.log(`[${new Date().toISOString()}] ${msg}`);
 }
 
-/**
- * Build the relayer signature for a release() call.
- * Mirrors the hash in Bridge.sol:
- *   keccak256(abi.encodePacked(destChainId, recipient, amount, nonce))
- */
-async function signRelease(wallet, destChainId, recipient, amount, nonce) {
-  const hash = ethers.solidityPackedKeccak256(
-    ["uint256", "address", "uint256", "uint256"],
-    [destChainId, recipient, amount, nonce]
-  );
-  return wallet.signMessage(ethers.getBytes(hash));
-}
-
 // ─── Core relay logic ────────────────────────────────────────────────────────
+
+/**
+ * Build a StandardMerkleTree from ALL unclaimed transfers and post the root on-chain.
+ * Combines entries carried over from the previous tree with any new events from this
+ * poll window, so users who bridged in earlier batches are never dropped from the tree.
+ * Saves the full tree to disk so users can query proofs via get-proof.js.
+ */
+async function buildAndPostMerkleRoot({ name, events, dstBridge }) {
+  const safeName = name.replace(/[^a-z0-9]/gi, "_");
+  const treeFile = path.join(__dirname, `merkle-tree-${safeName}.json`);
+
+  // ── Seed from previous tree (carry-forward unclaimed entries) ──────────────
+  // Use a map keyed by nonce so duplicates between old tree and new events
+  // are naturally deduplicated (new event wins, same data either way).
+  const entriesByNonce = new Map(); // nonce (string) → [recipient, amount, nonce]
+
+  if (fs.existsSync(treeFile)) {
+    try {
+      const prev = StandardMerkleTree.load(JSON.parse(fs.readFileSync(treeFile, "utf-8")));
+      for (const [, leaf] of prev.entries()) {
+        entriesByNonce.set(leaf[2], leaf); // leaf[2] = nonce
+      }
+      log(`[${name}] Loaded ${entriesByNonce.size} entries from previous tree`);
+    } catch (err) {
+      log(`[${name}] Could not load previous tree (starting fresh): ${err.message}`);
+    }
+  }
+
+  // ── Merge new events ────────────────────────────────────────────────────────
+  for (const event of events) {
+    const { recipient, amount, nonce } = event.args;
+    entriesByNonce.set(nonce.toString(), [recipient, amount.toString(), nonce.toString()]);
+  }
+
+  const pending = [...entriesByNonce.values()];
+
+  if (pending.length === 0) {
+    log(`[${name}] No entries to include in tree`);
+    return null;
+  }
+
+  log(`[${name}] Building Merkle tree for ${pending.length} transfer(s)`);
+  const tree = StandardMerkleTree.of(pending, ["address", "uint256", "uint256"]);
+  const root = tree.root;
+  log(`[${name}] Merkle root: ${root}`);
+
+  // Persist the full tree so users can query proofs
+  fs.writeFileSync(treeFile, JSON.stringify(tree.dump(), null, 2));
+  log(`[${name}] Tree saved to ${treeFile}`);
+
+  let tries = 0;
+  const MAX_TRIES = 3;
+  while (tries < MAX_TRIES) {
+    tries++;
+    try {
+      log(`[${name}] Posting setMerkleRoot() (attempt ${tries})`);
+      const tx = await dstBridge.setMerkleRoot(root);
+      const receipt = await tx.wait();
+      log(`[${name}] setMerkleRoot() confirmed in tx ${receipt.hash} (block ${receipt.blockNumber})`);
+      return tree;
+    } catch (err) {
+      log(`[${name}] setMerkleRoot() failed (attempt ${tries}): ${err.message}`);
+      if (tries === MAX_TRIES) {
+        log(`[${name}] Giving up after ${MAX_TRIES} attempts`);
+        return null;
+      }
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+}
 
 /**
  * Poll events on `srcChain` and relay them to `dstChain`.
  */
-async function relayDirection({ name, stateKey, srcBridge, dstBridge, wallet, destChainId, state }) {
+async function relayDirection({ name, stateKey, srcBridge, dstBridge, state }) {
   const provider = srcBridge.runner.provider ?? srcBridge.runner;
   const latestBlock = await provider.getBlockNumber();
 
@@ -104,53 +165,7 @@ async function relayDirection({ name, stateKey, srcBridge, dstBridge, wallet, de
 
   log(`[${name}] Found ${events.length} BridgeInitiated event(s)`);
 
-  for (const event of events) {
-    const { recipient, amount, nonce } = event.args;
-    const nonceNum = Number(nonce);
-
-    log(`[${name}] Event: recipient=${recipient} amount=${ethers.formatEther(amount)} nonce=${nonceNum} tx=${event.transactionHash}`);
-
-    let alreadyProcessed;
-    try {
-      alreadyProcessed = await dstBridge.processedNonces(nonce);
-    } catch (err) {
-      log(`[${name}] processedNonces check failed: ${err.message}`);
-      continue;
-    }
-
-    if (alreadyProcessed) {
-      log(`[${name}] Nonce ${nonceNum} already processed, skipping`);
-      continue;
-    }
-
-    let sig;
-    try {
-      sig = await signRelease(wallet, destChainId, recipient, amount, nonce);
-    } catch (err) {
-      log(`[${name}] Signing failed: ${err.message}`);
-      continue;
-    }
-
-    let tries = 0;
-    const MAX_TRIES = 3;
-    while (tries < MAX_TRIES) {
-      tries++;
-      try {
-        log(`[${name}] Submitting release() for nonce ${nonceNum} (attempt ${tries})`);
-        const tx = await dstBridge.release(recipient, amount, nonce, sig);
-        const receipt = await tx.wait();
-        log(`[${name}] release() confirmed in tx ${receipt.hash} (block ${receipt.blockNumber})`);
-        break;
-      } catch (err) {
-        log(`[${name}] release() failed (attempt ${tries}): ${err.message}`);
-        if (tries === MAX_TRIES) {
-          log(`[${name}] Giving up on nonce ${nonceNum} after ${MAX_TRIES} attempts`);
-        } else {
-          await new Promise((r) => setTimeout(r, 3000));
-        }
-      }
-    }
-  }
+  await buildAndPostMerkleRoot({ name, events, dstBridge });
 
   state[stateKey] = toBlock;
   saveState(state);
@@ -204,8 +219,6 @@ async function main() {
         stateKey: "sepolia",
         srcBridge: sepoliaBridgeRead,
         dstBridge: hyperevmBridgeWrite,
-        wallet: hyperevmWallet,
-        destChainId: BigInt(hyperevmDep.chainId),
         state,
       });
 
@@ -215,8 +228,6 @@ async function main() {
         stateKey: "hyperevm",
         srcBridge: hyperevmBridgeRead,
         dstBridge: sepoliaBridgeWrite,
-        wallet: sepoliaWallet,
-        destChainId: BigInt(sepoliaDep.chainId),
         state,
       });
     } catch (err) {

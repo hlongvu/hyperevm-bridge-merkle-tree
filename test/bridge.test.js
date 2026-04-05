@@ -1,14 +1,12 @@
 import { expect } from "chai";
 import { network } from "hardhat";
+import { StandardMerkleTree } from "@openzeppelin/merkle-tree";
 import BridgeSepoliaModule from "../ignition/modules/BridgeSepolia.js";
 import BridgeHyperEVMModule from "../ignition/modules/BridgeHyperEVM.js";
 
 // In Hardhat 3, ethers and ignition are accessed via the network connection
 const connection = await network.connect();
 const { ethers, ignition } = connection;
-
-// Hardhat local network chainId — Bridge.sol uses block.chainid in signature hash
-const CHAIN_ID = 31337n;
 
 // ─── Fixture ─────────────────────────────────────────────────────────────────
 
@@ -34,12 +32,27 @@ async function deployBridge(relayerAddress, deploymentId) {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-async function signRelease(wallet, recipient, amount, nonce) {
-  const hash = ethers.solidityPackedKeccak256(
-    ["uint256", "address", "uint256", "uint256"],
-    [CHAIN_ID, recipient, amount, nonce]
+/**
+ * Build a StandardMerkleTree from [recipient, amount, nonce] entries.
+ * Types must match the on-chain leaf encoding: (address, uint256, uint256).
+ */
+function buildMerkleTree(entries) {
+  const tree = StandardMerkleTree.of(
+    entries.map(([r, a, n]) => [r, a.toString(), n.toString()]),
+    ["address", "uint256", "uint256"]
   );
-  return wallet.signMessage(ethers.getBytes(hash));
+  return { tree, root: tree.root };
+}
+
+/**
+ * Get the proof for a specific nonce from a tree.
+ */
+function getMerkleProof(tree, nonce) {
+  const targetNonce = BigInt(nonce).toString();
+  for (const [i, [, , n]] of tree.entries()) {
+    if (n === targetNonce) return tree.getProof(i);
+  }
+  throw new Error(`Nonce ${nonce} not found in tree`);
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -103,9 +116,9 @@ describe("Bridge", function () {
     });
   });
 
-  // ─── Direction A: Sepolia → HyperEVM ──────────────────────────────────────
+  // ─── bridge() ──────────────────────────────────────────────────────────────
 
-  describe("Direction A: Sepolia → HyperEVM (LOCK → MINT)", function () {
+  describe("bridge()", function () {
     const amount = ethers.parseEther("50");
 
     beforeEach(async function () {
@@ -124,38 +137,19 @@ describe("Bridge", function () {
       );
     });
 
-    it("relayer mints on HyperEVM after locking on Sepolia", async function () {
-      const tx = await sepoliaBridge.connect(user).bridge(amount, other.address);
-      const receipt = await tx.wait();
-      const event = receipt.logs.find((l) => {
-        try { return sepoliaBridge.interface.parseLog(l).name === "BridgeInitiated"; } catch { return false; }
-      });
-      const { nonce } = sepoliaBridge.interface.parseLog(event).args;
+    it("burns tokens on HyperEVM (MINT mode) and emits BridgeInitiated", async function () {
+      // Give user wTTK by minting directly (only bridge can mint; simulate via claim)
+      const { tree, root } = buildMerkleTree([[user.address, amount, 0n]]);
+      await hyperevmBridge.connect(relayer).setMerkleRoot(root);
+      const proof = getMerkleProof(tree, 0n);
+      await hyperevmBridge.connect(user).claim(proof, user.address, amount, 0n);
 
-      const sig = await signRelease(relayer, other.address, amount, nonce);
-      await expect(hyperevmBridge.connect(relayer).release(other.address, amount, nonce, sig))
-        .to.emit(hyperevmBridge, "BridgeReleased")
-        .withArgs(other.address, amount, nonce);
+      await hyperevmToken.connect(user).approve(await hyperevmBridge.getAddress(), amount);
+      await expect(hyperevmBridge.connect(user).bridge(amount, user.address))
+        .to.emit(hyperevmBridge, "BridgeInitiated")
+        .withArgs(user.address, user.address, amount, 0n);
 
-      expect(await hyperevmToken.balanceOf(other.address)).to.equal(amount);
-    });
-
-    it("cannot replay the same nonce", async function () {
-      await sepoliaBridge.connect(user).bridge(amount, other.address);
-      const sig = await signRelease(relayer, other.address, amount, 0n);
-      await hyperevmBridge.connect(relayer).release(other.address, amount, 0n, sig);
-
-      await expect(
-        hyperevmBridge.connect(relayer).release(other.address, amount, 0n, sig)
-      ).to.be.revertedWith("Bridge: nonce already processed");
-    });
-
-    it("rejects invalid relayer signature", async function () {
-      await sepoliaBridge.connect(user).bridge(amount, other.address);
-      const fakeSig = await signRelease(other, other.address, amount, 0n);
-      await expect(
-        hyperevmBridge.connect(relayer).release(other.address, amount, 0n, fakeSig)
-      ).to.be.revertedWith("Bridge: invalid relayer signature");
+      expect(await hyperevmToken.balanceOf(user.address)).to.equal(0n);
     });
 
     it("nonce increments per bridge() call", async function () {
@@ -172,67 +166,149 @@ describe("Bridge", function () {
         expect(nonce).to.equal(BigInt(i));
       }
     });
-  });
 
-  // ─── Direction B: HyperEVM → Sepolia ──────────────────────────────────────
-
-  describe("Direction B: HyperEVM → Sepolia (MINT → LOCK)", function () {
-    const lockAmount = ethers.parseEther("50");
-    const burnAmount = ethers.parseEther("20");
-
-    beforeEach(async function () {
-      // Sepolia→HyperEVM first so user has wTTK to burn back
-      await sepoliaToken.connect(user).approve(await sepoliaBridge.getAddress(), lockAmount);
-      await sepoliaBridge.connect(user).bridge(lockAmount, user.address);
-      const sig = await signRelease(relayer, user.address, lockAmount, 0n);
-      await hyperevmBridge.connect(relayer).release(user.address, lockAmount, 0n, sig);
-      expect(await hyperevmToken.balanceOf(user.address)).to.equal(lockAmount);
-    });
-
-    it("burns wTTK on HyperEVM and emits BridgeInitiated", async function () {
-      await hyperevmToken.connect(user).approve(await hyperevmBridge.getAddress(), burnAmount);
-      await expect(hyperevmBridge.connect(user).bridge(burnAmount, user.address))
-        .to.emit(hyperevmBridge, "BridgeInitiated")
-        .withArgs(user.address, user.address, burnAmount, 0n);
-
-      expect(await hyperevmToken.balanceOf(user.address)).to.equal(lockAmount - burnAmount);
-    });
-
-    it("relayer unlocks TTK on Sepolia after burning wTTK", async function () {
-      await hyperevmToken.connect(user).approve(await hyperevmBridge.getAddress(), burnAmount);
-      await hyperevmBridge.connect(user).bridge(burnAmount, user.address);
-
-      const balanceBefore = await sepoliaToken.balanceOf(user.address);
-      const sig = await signRelease(relayer, user.address, burnAmount, 0n);
-      await sepoliaBridge.connect(relayer).release(user.address, burnAmount, 0n, sig);
-
-      expect(await sepoliaToken.balanceOf(user.address)).to.equal(
-        balanceBefore + burnAmount
-      );
-    });
-  });
-
-  // ─── Edge cases ────────────────────────────────────────────────────────────
-
-  describe("Edge cases", function () {
-    it("bridge() reverts with amount=0", async function () {
+    it("reverts with amount=0", async function () {
       await expect(
         sepoliaBridge.connect(user).bridge(0, other.address)
       ).to.be.revertedWith("Bridge: amount must be > 0");
     });
 
-    it("bridge() reverts with zero recipient", async function () {
-      await sepoliaToken.connect(user).approve(await sepoliaBridge.getAddress(), 100n);
+    it("reverts with zero recipient", async function () {
       await expect(
         sepoliaBridge.connect(user).bridge(100n, ethers.ZeroAddress)
       ).to.be.revertedWith("Bridge: invalid recipient");
     });
+  });
 
-    it("release() reverts with zero recipient", async function () {
-      const sig = await signRelease(relayer, ethers.ZeroAddress, 100n, 0n);
+  // ─── Merkle Claim ──────────────────────────────────────────────────────────
+
+  describe("Merkle Claim", function () {
+    const amount = ethers.parseEther("50");
+
+    beforeEach(async function () {
+      // Bridge tokens so nonce 0 exists on the source chain
+      await sepoliaToken.connect(user).approve(await sepoliaBridge.getAddress(), amount);
+      await sepoliaBridge.connect(user).bridge(amount, other.address);
+    });
+
+    it("relayer can set merkle root", async function () {
+      const { root } = buildMerkleTree([[other.address, amount, 0n]]);
+      await expect(hyperevmBridge.connect(relayer).setMerkleRoot(root))
+        .to.emit(hyperevmBridge, "MerkleRootUpdated")
+        .withArgs(root);
+      expect(await hyperevmBridge.merkleRoot()).to.equal(root);
+    });
+
+    it("non-relayer cannot set merkle root", async function () {
+      const { root } = buildMerkleTree([[other.address, amount, 0n]]);
       await expect(
-        hyperevmBridge.connect(relayer).release(ethers.ZeroAddress, 100n, 0n, sig)
+        hyperevmBridge.connect(user).setMerkleRoot(root)
+      ).to.be.revertedWith("Bridge: caller is not relayer");
+    });
+
+    it("setMerkleRoot reverts with zero root", async function () {
+      await expect(
+        hyperevmBridge.connect(relayer).setMerkleRoot(ethers.ZeroHash)
+      ).to.be.revertedWith("Bridge: root cannot be zero");
+    });
+
+    it("user can claim with valid proof (MINT mode)", async function () {
+      const { tree, root } = buildMerkleTree([[other.address, amount, 0n]]);
+      await hyperevmBridge.connect(relayer).setMerkleRoot(root);
+
+      const proof = getMerkleProof(tree, 0n);
+      await expect(
+        hyperevmBridge.connect(other).claim(proof, other.address, amount, 0n)
+      )
+        .to.emit(hyperevmBridge, "BridgeClaimed")
+        .withArgs(other.address, amount, 0n);
+
+      expect(await hyperevmToken.balanceOf(other.address)).to.equal(amount);
+    });
+
+    it("claim marks nonce as processed", async function () {
+      const { tree, root } = buildMerkleTree([[other.address, amount, 0n]]);
+      await hyperevmBridge.connect(relayer).setMerkleRoot(root);
+      const proof = getMerkleProof(tree, 0n);
+      await hyperevmBridge.connect(other).claim(proof, other.address, amount, 0n);
+
+      expect(await hyperevmBridge.processedNonces(0n)).to.equal(true);
+    });
+
+    it("cannot claim twice (replay protection)", async function () {
+      const { tree, root } = buildMerkleTree([[other.address, amount, 0n]]);
+      await hyperevmBridge.connect(relayer).setMerkleRoot(root);
+      const proof = getMerkleProof(tree, 0n);
+      await hyperevmBridge.connect(other).claim(proof, other.address, amount, 0n);
+
+      await expect(
+        hyperevmBridge.connect(other).claim(proof, other.address, amount, 0n)
+      ).to.be.revertedWith("Bridge: nonce already processed");
+    });
+
+    it("claim reverts with wrong amount in proof", async function () {
+      const wrongAmount = ethers.parseEther("99");
+      const { tree, root } = buildMerkleTree([[other.address, wrongAmount, 0n]]);
+      await hyperevmBridge.connect(relayer).setMerkleRoot(root);
+      const proof = getMerkleProof(tree, 0n);
+
+      // proof is for wrongAmount but we submit the real amount — leaf mismatch
+      await expect(
+        hyperevmBridge.connect(other).claim(proof, other.address, amount, 0n)
+      ).to.be.revertedWith("Bridge: invalid merkle proof");
+    });
+
+    it("claim reverts when no root is set", async function () {
+      await expect(
+        hyperevmBridge.connect(other).claim([], other.address, amount, 0n)
+      ).to.be.revertedWith("Bridge: no merkle root set");
+    });
+
+    it("claim() reverts with zero recipient", async function () {
+      const { root } = buildMerkleTree([[other.address, amount, 0n]]);
+      await hyperevmBridge.connect(relayer).setMerkleRoot(root);
+      await expect(
+        hyperevmBridge.connect(user).claim([], ethers.ZeroAddress, 100n, 0n)
       ).to.be.revertedWith("Bridge: invalid recipient");
+    });
+
+    it("claim() reverts with zero amount", async function () {
+      const { root } = buildMerkleTree([[other.address, amount, 0n]]);
+      await hyperevmBridge.connect(relayer).setMerkleRoot(root);
+      await expect(
+        hyperevmBridge.connect(user).claim([], other.address, 0n, 0n)
+      ).to.be.revertedWith("Bridge: amount must be > 0");
+    });
+
+    it("multi-leaf tree: each leaf claimable independently", async function () {
+      const amount2 = ethers.parseEther("30");
+      await sepoliaToken.connect(user).approve(await sepoliaBridge.getAddress(), amount2);
+      await sepoliaBridge.connect(user).bridge(amount2, user.address);
+
+      const { tree, root } = buildMerkleTree([
+        [other.address, amount, 0n],
+        [user.address, amount2, 1n],
+      ]);
+      await hyperevmBridge.connect(relayer).setMerkleRoot(root);
+
+      const proof0 = getMerkleProof(tree, 0n);
+      await hyperevmBridge.connect(other).claim(proof0, other.address, amount, 0n);
+      expect(await hyperevmBridge.processedNonces(1n)).to.equal(false);
+
+      const proof1 = getMerkleProof(tree, 1n);
+      await hyperevmBridge.connect(user).claim(proof1, user.address, amount2, 1n);
+      expect(await hyperevmToken.balanceOf(user.address)).to.equal(amount2);
+    });
+
+    it("LOCK mode: claim unlocks tokens from escrow (Sepolia)", async function () {
+      // Tokens are locked in Sepolia bridge from beforeEach bridge() call
+      const { tree, root } = buildMerkleTree([[other.address, amount, 0n]]);
+      await sepoliaBridge.connect(relayer).setMerkleRoot(root);
+
+      const balBefore = await sepoliaToken.balanceOf(other.address);
+      const proof = getMerkleProof(tree, 0n);
+      await sepoliaBridge.connect(other).claim(proof, other.address, amount, 0n);
+      expect(await sepoliaToken.balanceOf(other.address)).to.equal(balBefore + amount);
     });
   });
 });

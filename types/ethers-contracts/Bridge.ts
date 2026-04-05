@@ -6,30 +6,46 @@ import type { TypedContractEvent, TypedDeferredTopicFilter, TypedEventLog, Typed
   
 
   export interface BridgeInterface extends Interface {
-    getFunction(nameOrSignature: "bridge" | "destChainId" | "mode" | "outboundNonce" | "processedNonces" | "relayer" | "release" | "token"): FunctionFragment;
+    getFunction(nameOrSignature: "bridge" | "claim" | "destChainId" | "merkleRoot" | "mode" | "outboundNonce" | "processedNonces" | "relayer" | "setMerkleRoot" | "token"): FunctionFragment;
 
-    getEvent(nameOrSignatureOrTopic: "BridgeInitiated" | "BridgeReleased"): EventFragment;
+    getEvent(nameOrSignatureOrTopic: "BridgeClaimed" | "BridgeInitiated" | "MerkleRootUpdated"): EventFragment;
 
     encodeFunctionData(functionFragment: 'bridge', values: [BigNumberish, AddressLike]): string;
+encodeFunctionData(functionFragment: 'claim', values: [BytesLike[], AddressLike, BigNumberish, BigNumberish]): string;
 encodeFunctionData(functionFragment: 'destChainId', values?: undefined): string;
+encodeFunctionData(functionFragment: 'merkleRoot', values?: undefined): string;
 encodeFunctionData(functionFragment: 'mode', values?: undefined): string;
 encodeFunctionData(functionFragment: 'outboundNonce', values?: undefined): string;
 encodeFunctionData(functionFragment: 'processedNonces', values: [BigNumberish]): string;
 encodeFunctionData(functionFragment: 'relayer', values?: undefined): string;
-encodeFunctionData(functionFragment: 'release', values: [AddressLike, BigNumberish, BigNumberish, BytesLike]): string;
+encodeFunctionData(functionFragment: 'setMerkleRoot', values: [BytesLike]): string;
 encodeFunctionData(functionFragment: 'token', values?: undefined): string;
 
     decodeFunctionResult(functionFragment: 'bridge', data: BytesLike): Result;
+decodeFunctionResult(functionFragment: 'claim', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'destChainId', data: BytesLike): Result;
+decodeFunctionResult(functionFragment: 'merkleRoot', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'mode', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'outboundNonce', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'processedNonces', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'relayer', data: BytesLike): Result;
-decodeFunctionResult(functionFragment: 'release', data: BytesLike): Result;
+decodeFunctionResult(functionFragment: 'setMerkleRoot', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'token', data: BytesLike): Result;
   }
 
   
+    export namespace BridgeClaimedEvent {
+      export type InputTuple = [recipient: AddressLike, amount: BigNumberish, nonce: BigNumberish];
+      export type OutputTuple = [recipient: string, amount: bigint, nonce: bigint];
+      export interface OutputObject {recipient: string, amount: bigint, nonce: bigint };
+      export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>
+      export type Filter = TypedDeferredTopicFilter<Event>
+      export type Log = TypedEventLog<Event>
+      export type LogDescription = TypedLogDescription<Event>
+    }
+
+  
+
     export namespace BridgeInitiatedEvent {
       export type InputTuple = [sender: AddressLike, recipient: AddressLike, amount: BigNumberish, nonce: BigNumberish];
       export type OutputTuple = [sender: string, recipient: string, amount: bigint, nonce: bigint];
@@ -42,10 +58,10 @@ decodeFunctionResult(functionFragment: 'token', data: BytesLike): Result;
 
   
 
-    export namespace BridgeReleasedEvent {
-      export type InputTuple = [recipient: AddressLike, amount: BigNumberish, nonce: BigNumberish];
-      export type OutputTuple = [recipient: string, amount: bigint, nonce: bigint];
-      export interface OutputObject {recipient: string, amount: bigint, nonce: bigint };
+    export namespace MerkleRootUpdatedEvent {
+      export type InputTuple = [root: BytesLike];
+      export type OutputTuple = [root: string];
+      export interface OutputObject {root: string };
       export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>
       export type Filter = TypedDeferredTopicFilter<Event>
       export type Log = TypedEventLog<Event>
@@ -96,9 +112,25 @@ decodeFunctionResult(functionFragment: 'token', data: BytesLike): Result;
     
 
     
+    claim: TypedContractMethod<
+      [proof: BytesLike[], recipient: AddressLike, amount: BigNumberish, nonce: BigNumberish, ],
+      [void],
+      'nonpayable'
+    >
+    
+
+    
     destChainId: TypedContractMethod<
       [],
       [bigint],
+      'view'
+    >
+    
+
+    
+    merkleRoot: TypedContractMethod<
+      [],
+      [string],
       'view'
     >
     
@@ -136,8 +168,8 @@ decodeFunctionResult(functionFragment: 'token', data: BytesLike): Result;
     
 
     
-    release: TypedContractMethod<
-      [recipient: AddressLike, amount: BigNumberish, nonce: BigNumberish, sig: BytesLike, ],
+    setMerkleRoot: TypedContractMethod<
+      [root: BytesLike, ],
       [void],
       'nonpayable'
     >
@@ -159,9 +191,19 @@ decodeFunctionResult(functionFragment: 'token', data: BytesLike): Result;
       [void],
       'nonpayable'
     >;
+getFunction(nameOrSignature: 'claim'): TypedContractMethod<
+      [proof: BytesLike[], recipient: AddressLike, amount: BigNumberish, nonce: BigNumberish, ],
+      [void],
+      'nonpayable'
+    >;
 getFunction(nameOrSignature: 'destChainId'): TypedContractMethod<
       [],
       [bigint],
+      'view'
+    >;
+getFunction(nameOrSignature: 'merkleRoot'): TypedContractMethod<
+      [],
+      [string],
       'view'
     >;
 getFunction(nameOrSignature: 'mode'): TypedContractMethod<
@@ -184,8 +226,8 @@ getFunction(nameOrSignature: 'relayer'): TypedContractMethod<
       [string],
       'view'
     >;
-getFunction(nameOrSignature: 'release'): TypedContractMethod<
-      [recipient: AddressLike, amount: BigNumberish, nonce: BigNumberish, sig: BytesLike, ],
+getFunction(nameOrSignature: 'setMerkleRoot'): TypedContractMethod<
+      [root: BytesLike, ],
       [void],
       'nonpayable'
     >;
@@ -195,17 +237,22 @@ getFunction(nameOrSignature: 'token'): TypedContractMethod<
       'view'
     >;
 
-    getEvent(key: 'BridgeInitiated'): TypedContractEvent<BridgeInitiatedEvent.InputTuple, BridgeInitiatedEvent.OutputTuple, BridgeInitiatedEvent.OutputObject>;
-getEvent(key: 'BridgeReleased'): TypedContractEvent<BridgeReleasedEvent.InputTuple, BridgeReleasedEvent.OutputTuple, BridgeReleasedEvent.OutputObject>;
+    getEvent(key: 'BridgeClaimed'): TypedContractEvent<BridgeClaimedEvent.InputTuple, BridgeClaimedEvent.OutputTuple, BridgeClaimedEvent.OutputObject>;
+getEvent(key: 'BridgeInitiated'): TypedContractEvent<BridgeInitiatedEvent.InputTuple, BridgeInitiatedEvent.OutputTuple, BridgeInitiatedEvent.OutputObject>;
+getEvent(key: 'MerkleRootUpdated'): TypedContractEvent<MerkleRootUpdatedEvent.InputTuple, MerkleRootUpdatedEvent.OutputTuple, MerkleRootUpdatedEvent.OutputObject>;
 
     filters: {
       
+      'BridgeClaimed(address,uint256,uint256)': TypedContractEvent<BridgeClaimedEvent.InputTuple, BridgeClaimedEvent.OutputTuple, BridgeClaimedEvent.OutputObject>;
+      BridgeClaimed: TypedContractEvent<BridgeClaimedEvent.InputTuple, BridgeClaimedEvent.OutputTuple, BridgeClaimedEvent.OutputObject>;
+    
+
       'BridgeInitiated(address,address,uint256,uint256)': TypedContractEvent<BridgeInitiatedEvent.InputTuple, BridgeInitiatedEvent.OutputTuple, BridgeInitiatedEvent.OutputObject>;
       BridgeInitiated: TypedContractEvent<BridgeInitiatedEvent.InputTuple, BridgeInitiatedEvent.OutputTuple, BridgeInitiatedEvent.OutputObject>;
     
 
-      'BridgeReleased(address,uint256,uint256)': TypedContractEvent<BridgeReleasedEvent.InputTuple, BridgeReleasedEvent.OutputTuple, BridgeReleasedEvent.OutputObject>;
-      BridgeReleased: TypedContractEvent<BridgeReleasedEvent.InputTuple, BridgeReleasedEvent.OutputTuple, BridgeReleasedEvent.OutputObject>;
+      'MerkleRootUpdated(bytes32)': TypedContractEvent<MerkleRootUpdatedEvent.InputTuple, MerkleRootUpdatedEvent.OutputTuple, MerkleRootUpdatedEvent.OutputObject>;
+      MerkleRootUpdated: TypedContractEvent<MerkleRootUpdatedEvent.InputTuple, MerkleRootUpdatedEvent.OutputTuple, MerkleRootUpdatedEvent.OutputObject>;
     
     };
   }

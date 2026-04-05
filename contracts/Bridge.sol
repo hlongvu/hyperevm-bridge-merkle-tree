@@ -1,23 +1,20 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.25;
 
-import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 import "./BridgeToken.sol";
 
 /**
  * @title Bridge
  * @notice Bidirectional ERC20 bridge using Lock & Mint pattern with a trusted relayer.
  *
- *   LOCK mode (Sepolia):   bridge() locks tokens in escrow, release() unlocks from escrow.
- *   MINT mode (HyperEVM):  bridge() burns tokens,          release() mints tokens.
+ *   LOCK mode (Sepolia):   bridge() locks tokens in escrow, claim() unlocks from escrow.
+ *   MINT mode (HyperEVM):  bridge() burns tokens,          claim() mints tokens.
  *
- * Signature scheme (relayer signs before calling release):
- *   keccak256(abi.encodePacked(destChainId, recipient, amount, nonce))
+ * The relayer batches pending transfers into a Merkle tree and posts the root via
+ * setMerkleRoot(). Users then claim their funds by submitting a Merkle proof.
  */
 contract Bridge {
-    using ECDSA for bytes32;
-
     enum Mode { LOCK, MINT }
 
     BridgeToken public immutable token;
@@ -30,6 +27,9 @@ contract Bridge {
     /// @notice Tracks inbound nonces already processed to prevent replay attacks.
     mapping(uint256 => bool) public processedNonces;
 
+    /// @notice Current Merkle root for claimable transfers. Zero means no root set.
+    bytes32 public merkleRoot;
+
     event BridgeInitiated(
         address indexed sender,
         address indexed recipient,
@@ -37,7 +37,9 @@ contract Bridge {
         uint256 nonce
     );
 
-    event BridgeReleased(
+    event MerkleRootUpdated(bytes32 indexed root);
+
+    event BridgeClaimed(
         address indexed recipient,
         uint256 amount,
         uint256 nonce
@@ -56,6 +58,53 @@ contract Bridge {
     }
 
     /**
+     * @notice Set a new Merkle root for the current batch of claimable transfers.
+     *         Only callable by the relayer.
+     * @param root  keccak256 root of the StandardMerkleTree built from
+     *              (address recipient, uint256 amount, uint256 nonce) leaves.
+     */
+    function setMerkleRoot(bytes32 root) external {
+        require(msg.sender == relayer, "Bridge: caller is not relayer");
+        require(root != bytes32(0), "Bridge: root cannot be zero");
+        merkleRoot = root;
+        emit MerkleRootUpdated(root);
+    }
+
+    /**
+     * @notice Claim a bridged transfer by submitting a Merkle proof.
+     *         Anyone may call this on behalf of `recipient`.
+     * @param proof      Merkle proof path (from @openzeppelin/merkle-tree).
+     * @param recipient  Address to receive tokens.
+     * @param amount     Amount of tokens to release.
+     * @param nonce      Outbound nonce from the source chain BridgeInitiated event.
+     */
+    function claim(
+        bytes32[] calldata proof,
+        address recipient,
+        uint256 amount,
+        uint256 nonce
+    ) external {
+        require(merkleRoot != bytes32(0), "Bridge: no merkle root set");
+        require(!processedNonces[nonce], "Bridge: nonce already processed");
+        require(recipient != address(0), "Bridge: invalid recipient");
+        require(amount > 0, "Bridge: amount must be > 0");
+
+        // Double-hash encoding matches @openzeppelin/merkle-tree StandardMerkleTree
+        bytes32 leaf = keccak256(bytes.concat(keccak256(abi.encode(recipient, amount, nonce))));
+        require(MerkleProof.verify(proof, merkleRoot, leaf), "Bridge: invalid merkle proof");
+
+        processedNonces[nonce] = true;
+
+        if (mode == Mode.LOCK) {
+            require(token.transfer(recipient, amount), "Bridge: transfer failed");
+        } else {
+            token.mint(recipient, amount);
+        }
+
+        emit BridgeClaimed(recipient, amount, nonce);
+    }
+
+    /**
      * @notice Initiate a bridge transfer to the destination chain.
      * @param amount    Amount of tokens to bridge.
      * @param recipient Address on the destination chain to receive tokens.
@@ -67,53 +116,14 @@ contract Bridge {
         uint256 nonce = outboundNonce++;
 
         if (mode == Mode.LOCK) {
-            // Transfer tokens from user into this contract (escrow)
             require(
                 token.transferFrom(msg.sender, address(this), amount),
                 "Bridge: transferFrom failed"
             );
         } else {
-            // Burn tokens from user
             token.burn(msg.sender, amount);
         }
 
         emit BridgeInitiated(msg.sender, recipient, amount, nonce);
-    }
-
-    /**
-     * @notice Release tokens to recipient. Called by the relayer after verifying
-     *         a BridgeInitiated event on the source chain.
-     * @param recipient Address to receive tokens on this chain.
-     * @param amount    Amount of tokens to release.
-     * @param nonce     Outbound nonce from the source chain event.
-     * @param sig       Relayer's ECDSA signature over (destChainId, recipient, amount, nonce).
-     */
-    function release(
-        address recipient,
-        uint256 amount,
-        uint256 nonce,
-        bytes calldata sig
-    ) external {
-        require(!processedNonces[nonce], "Bridge: nonce already processed");
-        require(recipient != address(0), "Bridge: invalid recipient");
-        require(amount > 0, "Bridge: amount must be > 0");
-
-        // Verify signature — bind to this chain's ID to prevent cross-chain replay
-        bytes32 hash = keccak256(abi.encodePacked(block.chainid, recipient, amount, nonce));
-        bytes32 ethHash = MessageHashUtils.toEthSignedMessageHash(hash);
-        address signer = ethHash.recover(sig);
-        require(signer == relayer, "Bridge: invalid relayer signature");
-
-        processedNonces[nonce] = true;
-
-        if (mode == Mode.LOCK) {
-            // Transfer tokens out of escrow
-            require(token.transfer(recipient, amount), "Bridge: transfer failed");
-        } else {
-            // Mint tokens to recipient
-            token.mint(recipient, amount);
-        }
-
-        emit BridgeReleased(recipient, amount, nonce);
     }
 }
