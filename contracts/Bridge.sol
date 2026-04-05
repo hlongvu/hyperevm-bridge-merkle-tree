@@ -89,8 +89,8 @@ contract Bridge {
         require(recipient != address(0), "Bridge: invalid recipient");
         require(amount > 0, "Bridge: amount must be > 0");
 
-        // Double-hash encoding matches @openzeppelin/merkle-tree StandardMerkleTree
-        bytes32 leaf = keccak256(bytes.concat(keccak256(abi.encode(recipient, amount, nonce))));
+        // Single keccak256 of encodePacked — matches merkletreejs off-chain leaf encoding
+        bytes32 leaf = keccak256(abi.encodePacked(recipient, amount, nonce));
         require(MerkleProof.verify(proof, merkleRoot, leaf), "Bridge: invalid merkle proof");
 
         processedNonces[nonce] = true;

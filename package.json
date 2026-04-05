@@ -28,8 +28,8 @@
   },
   "dependencies": {
     "@openzeppelin/contracts": "^5.6.1",
-    "@openzeppelin/merkle-tree": "^1.0.8",
-    "dotenv": "^17.4.0"
+    "dotenv": "^17.4.0",
+    "merkletreejs": "^0.6.0"
   },
   "type": "module"
 }

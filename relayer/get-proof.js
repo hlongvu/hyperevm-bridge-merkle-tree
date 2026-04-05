@@ -14,10 +14,11 @@
  * The proof output can be passed directly to Bridge.claim() on-chain.
  */
 
-import { StandardMerkleTree } from "@openzeppelin/merkle-tree";
+import { MerkleTree } from "merkletreejs";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { makeLeaf, keccak256buf } from "./relay.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -36,34 +37,19 @@ if (!fs.existsSync(treeFile)) {
   process.exit(1);
 }
 
-const treeData = JSON.parse(fs.readFileSync(treeFile, "utf-8"));
-const tree = StandardMerkleTree.load(treeData);
+const saved = JSON.parse(fs.readFileSync(treeFile, "utf-8"));
+const tree = MerkleTree.unmarshalTree(saved.tree, keccak256buf, { sortPairs: true });
 const targetNonce = BigInt(nonceArg).toString();
 
-let found = false;
-for (const [i, [recipient, amount, nonce]] of tree.entries()) {
-  if (nonce === targetNonce) {
-    const proof = tree.getProof(i);
-    console.log(
-      JSON.stringify(
-        {
-          recipient,
-          amount,
-          nonce,
-          proof,
-          merkleRoot: tree.root,
-        },
-        null,
-        2
-      )
-    );
-    found = true;
-    break;
-  }
-}
-
-if (!found) {
-  console.error(`Nonce ${nonceArg} not found in current Merkle tree for direction "${direction}".`);
-  console.error("The relayer may not have included it yet, or it may already be claimed.");
+const entry = saved.entries.find(([, , n]) => n === targetNonce);
+if (!entry) {
+  console.error(`Nonce ${nonceArg} not found in current tree for direction "${direction}".`);
+  console.error("The relayer may not have included it yet.");
   process.exit(1);
 }
+
+const [recipient, amount, nonce] = entry;
+const leaf = makeLeaf(recipient, amount, nonce);
+const proof = tree.getHexProof(leaf);
+
+console.log(JSON.stringify({ recipient, amount, nonce, proof, merkleRoot: tree.getHexRoot() }, null, 2));

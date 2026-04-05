@@ -1,6 +1,7 @@
 import { expect } from "chai";
 import { network } from "hardhat";
-import { StandardMerkleTree } from "@openzeppelin/merkle-tree";
+import { MerkleTree } from "merkletreejs";
+import { makeLeaf, keccak256buf } from "../relayer/relay.js";
 import BridgeSepoliaModule from "../ignition/modules/BridgeSepolia.js";
 import BridgeHyperEVMModule from "../ignition/modules/BridgeHyperEVM.js";
 
@@ -33,26 +34,23 @@ async function deployBridge(relayerAddress, deploymentId) {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /**
- * Build a StandardMerkleTree from [recipient, amount, nonce] entries.
- * Types must match the on-chain leaf encoding: (address, uint256, uint256).
+ * Build a MerkleTree from [recipient, amount, nonce] entries.
+ * Leaf encoding matches on-chain: keccak256(abi.encodePacked(recipient, amount, nonce))
  */
 function buildMerkleTree(entries) {
-  const tree = StandardMerkleTree.of(
-    entries.map(([r, a, n]) => [r, a.toString(), n.toString()]),
-    ["address", "uint256", "uint256"]
-  );
-  return { tree, root: tree.root };
+  const leaves = entries.map(([r, a, n]) => makeLeaf(r, a, n));
+  const tree = new MerkleTree(leaves, keccak256buf, { sortPairs: true });
+  return { tree, entries, root: tree.getHexRoot() };
 }
 
 /**
- * Get the proof for a specific nonce from a tree.
+ * Get the hex proof for a specific nonce from a tree + entries list.
  */
-function getMerkleProof(tree, nonce) {
+function getMerkleProof(tree, nonce, entries) {
   const targetNonce = BigInt(nonce).toString();
-  for (const [i, [, , n]] of tree.entries()) {
-    if (n === targetNonce) return tree.getProof(i);
-  }
-  throw new Error(`Nonce ${nonce} not found in tree`);
+  const entry = entries.find(([, , n]) => BigInt(n).toString() === targetNonce);
+  if (!entry) throw new Error(`Nonce ${nonce} not found in entries`);
+  return tree.getHexProof(makeLeaf(entry[0], entry[1], entry[2]));
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -139,9 +137,9 @@ describe("Bridge", function () {
 
     it("burns tokens on HyperEVM (MINT mode) and emits BridgeInitiated", async function () {
       // Give user wTTK by minting directly (only bridge can mint; simulate via claim)
-      const { tree, root } = buildMerkleTree([[user.address, amount, 0n]]);
+      const { tree, entries, root } = buildMerkleTree([[user.address, amount, 0n]]);
       await hyperevmBridge.connect(relayer).setMerkleRoot(root);
-      const proof = getMerkleProof(tree, 0n);
+      const proof = getMerkleProof(tree, 0n, entries);
       await hyperevmBridge.connect(user).claim(proof, user.address, amount, 0n);
 
       await hyperevmToken.connect(user).approve(await hyperevmBridge.getAddress(), amount);
@@ -213,10 +211,10 @@ describe("Bridge", function () {
     });
 
     it("user can claim with valid proof (MINT mode)", async function () {
-      const { tree, root } = buildMerkleTree([[other.address, amount, 0n]]);
+      const { tree, entries, root } = buildMerkleTree([[other.address, amount, 0n]]);
       await hyperevmBridge.connect(relayer).setMerkleRoot(root);
 
-      const proof = getMerkleProof(tree, 0n);
+      const proof = getMerkleProof(tree, 0n, entries);
       await expect(
         hyperevmBridge.connect(other).claim(proof, other.address, amount, 0n)
       )
@@ -227,18 +225,18 @@ describe("Bridge", function () {
     });
 
     it("claim marks nonce as processed", async function () {
-      const { tree, root } = buildMerkleTree([[other.address, amount, 0n]]);
+      const { tree, entries, root } = buildMerkleTree([[other.address, amount, 0n]]);
       await hyperevmBridge.connect(relayer).setMerkleRoot(root);
-      const proof = getMerkleProof(tree, 0n);
+      const proof = getMerkleProof(tree, 0n, entries);
       await hyperevmBridge.connect(other).claim(proof, other.address, amount, 0n);
 
       expect(await hyperevmBridge.processedNonces(0n)).to.equal(true);
     });
 
     it("cannot claim twice (replay protection)", async function () {
-      const { tree, root } = buildMerkleTree([[other.address, amount, 0n]]);
+      const { tree, entries, root } = buildMerkleTree([[other.address, amount, 0n]]);
       await hyperevmBridge.connect(relayer).setMerkleRoot(root);
-      const proof = getMerkleProof(tree, 0n);
+      const proof = getMerkleProof(tree, 0n, entries);
       await hyperevmBridge.connect(other).claim(proof, other.address, amount, 0n);
 
       await expect(
@@ -248,9 +246,9 @@ describe("Bridge", function () {
 
     it("claim reverts with wrong amount in proof", async function () {
       const wrongAmount = ethers.parseEther("99");
-      const { tree, root } = buildMerkleTree([[other.address, wrongAmount, 0n]]);
+      const { tree, entries, root } = buildMerkleTree([[other.address, wrongAmount, 0n]]);
       await hyperevmBridge.connect(relayer).setMerkleRoot(root);
-      const proof = getMerkleProof(tree, 0n);
+      const proof = getMerkleProof(tree, 0n, entries);
 
       // proof is for wrongAmount but we submit the real amount — leaf mismatch
       await expect(
@@ -285,28 +283,28 @@ describe("Bridge", function () {
       await sepoliaToken.connect(user).approve(await sepoliaBridge.getAddress(), amount2);
       await sepoliaBridge.connect(user).bridge(amount2, user.address);
 
-      const { tree, root } = buildMerkleTree([
+      const { tree, entries, root } = buildMerkleTree([
         [other.address, amount, 0n],
         [user.address, amount2, 1n],
       ]);
       await hyperevmBridge.connect(relayer).setMerkleRoot(root);
 
-      const proof0 = getMerkleProof(tree, 0n);
+      const proof0 = getMerkleProof(tree, 0n, entries);
       await hyperevmBridge.connect(other).claim(proof0, other.address, amount, 0n);
       expect(await hyperevmBridge.processedNonces(1n)).to.equal(false);
 
-      const proof1 = getMerkleProof(tree, 1n);
+      const proof1 = getMerkleProof(tree, 1n, entries);
       await hyperevmBridge.connect(user).claim(proof1, user.address, amount2, 1n);
       expect(await hyperevmToken.balanceOf(user.address)).to.equal(amount2);
     });
 
     it("LOCK mode: claim unlocks tokens from escrow (Sepolia)", async function () {
       // Tokens are locked in Sepolia bridge from beforeEach bridge() call
-      const { tree, root } = buildMerkleTree([[other.address, amount, 0n]]);
+      const { tree, entries, root } = buildMerkleTree([[other.address, amount, 0n]]);
       await sepoliaBridge.connect(relayer).setMerkleRoot(root);
 
       const balBefore = await sepoliaToken.balanceOf(other.address);
-      const proof = getMerkleProof(tree, 0n);
+      const proof = getMerkleProof(tree, 0n, entries);
       await sepoliaBridge.connect(other).claim(proof, other.address, amount, 0n);
       expect(await sepoliaToken.balanceOf(other.address)).to.equal(balBefore + amount);
     });
